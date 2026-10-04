@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 #
-# import_from_ramalama: build a Strata --gguf-dir from a ramalama store by symlinking its blobs.
+# import_from_ramalama: link a ramalama store's blobs into Strata's models dir, so
+# the ~70 GB download is skipped.
 #
-# Strata downloads its GGUF shards from Hugging Face. If you already have them in a
-# ramalama store, this links the store's blobs into a folder Strata can use as
-# --gguf-dir, so the ~70 GB download is skipped. The shards are read through the
-# symlinks (Strata verifies each against its own GGUF tensor directory).
+# Strata downloads its GGUF shards from Hugging Face into <data dir>/models/<tag>/.
+# If you already have them in a ramalama store, this symlinks the store's blobs into
+# that exact folder, so setup finds them on its normal path and skips the download.
+# The shards are read through the symlinks (setup verifies each against its own GGUF
+# tensor directory and marks it done).
 #
 # Usage:
 #   import_from_ramalama.sh 'hf://ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0'
-#   ./setup.sh --family qwen --model Q2_0 --gguf-dir ~/.strata/gguf
+#   ./setup.sh --family qwen --model Q2_0
+#
+#   In the container, ~/.strata is the data dir:
+#   docker run ... -v "$HOME/.strata":/data \
+#     -v /usr/local/storage/ramalama/store:/usr/local/storage/ramalama/store:ro \
+#     -e FAMILY=coder -e MODEL=IQ1_M strata-rocm
 #
 # Environment:
 #   STRATA_RAMALAMA_STORE  the ramalama store root (default /usr/local/storage/ramalama/store)
-#   STRATA_GGUF_DIR        the --gguf-dir to build (default ~/.strata/gguf)
+#   STRATA_DATA_DIR        the Strata data dir (default ~/.strata); the model goes in <dir>/models/<tag>/
 set -euo pipefail
 
 STORE="${STRATA_RAMALAMA_STORE:-/usr/local/storage/ramalama/store}"
-DEST="${STRATA_GGUF_DIR:-$HOME/.strata/gguf}"
+DATA="${STRATA_DATA_DIR:-$HOME/.strata}"
 
 if [[ $# -lt 1 ]]; then
   echo "usage: $0 'hf://<org>/<repo>:<model>'" >&2
@@ -32,6 +39,18 @@ repo="${rest%:*}"
 model="${rest##*:}"
 [[ -n "$repo" && -n "$model" && "$repo" != "$rest" ]] || {
   echo "cannot split '$spec' into <repo>:<model>" >&2; exit 2; }
+
+# Strata's models dir is <data>/models/<tag>/, where tag = <family>-<model> (qwen has no
+# prefix). Derive the family from the repo name so the links land in the folder setup
+# looks in.
+case "$repo" in
+  *Coder*)   fam_name="coder";   prefix="coder-" ;;
+  *Swift*)   fam_name="swift";   prefix="swift-" ;;
+  unsloth/*) fam_name="unsloth"; prefix="unsloth-" ;;
+  *)         fam_name="qwen";    prefix="" ;;
+esac
+tag="${prefix}${model}"
+DEST="$DATA/models/$tag"
 
 refs="$STORE/huggingface/$repo/refs/$model.json"
 blobs="$STORE/huggingface/$repo/blobs"
@@ -68,8 +87,8 @@ if linked == 0:
 PY
 
 echo
-echo "gguf-dir ready: $DEST"
+echo "model files ready: $DEST"
 ls -la "$DEST"
 echo
 echo "start it with:"
-echo "  ./setup.sh --family qwen --model Q2_0 --gguf-dir $DEST"
+echo "  ./setup.sh --family $fam_name --model $model"
