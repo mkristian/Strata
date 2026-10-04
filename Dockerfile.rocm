@@ -53,7 +53,7 @@
 # version docs/AMD_HIP.md validates; 10.0.0-full is newer and untested here. Pin a tag,
 # or override with --build-arg ROCM_BASE=...  (rocm/dev-ubuntu-24.04 tags: 7.14.1-full,
 # 10.0.0-full, ...).
-ARG ROCM_BASE=rocm/dev-ubuntu-24.04:7.14.1-full
+ARG ROCM_BASE=docker.io/rocm/dev-ubuntu-24.04:7.14.1-full
 FROM ${ROCM_BASE}
 
 # STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1
