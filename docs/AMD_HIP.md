@@ -54,6 +54,13 @@ the kernel's amdgpu driver (no ROCm install needed):
   hand (`./setup.sh --calibrate`) is saved for the AMD card it ran on and reused when setup runs again. The Monitor
   shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32).
 
+- **Docker (Linux):** `Dockerfile.rocm` compiles the HIP engine into a container on AMD's
+  `rocm/dev-ubuntu-24.04:7.14.1-full`, the version this page validates; the build and run
+  lines are in [INSTALL.md](INSTALL.md#docker-amd-cards). The image carries its own ROCm, so
+  the host needs only the kernel's amdgpu driver and the card's `/dev/kfd` and `/dev/dri`
+  nodes. Its hipBLASLt is 1.4.1, which has no tuning table in `tools/hip`, so its prompts
+  run on plain hipBLAS (see [Tuning table](#tuning-table)).
+
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
 
 ## Windows

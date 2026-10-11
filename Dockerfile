@@ -8,15 +8,18 @@
 # so the CUDA architectures are fixed here instead of read from nvidia-smi: the
 # engine is a fat binary with a cubin per listed arch, and the runtime picks the
 # one matching your card. Narrow CUDA_ARCHITECTURES to your card for a faster
-# build; a card outside the set needs a rebuild with its own arch.
+# build; a card outside the set needs a rebuild with its own arch. Quote a list in a
+# shell: the ';' ends the command otherwise.
 #
 # Build:
 #   docker build -t strata .
 #   docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .        # RTX 40 only
 #
-# Run (host needs an NVIDIA driver >= 580 and nvidia-container-toolkit):
+# Run (host needs an NVIDIA driver >= 580 and nvidia-container-toolkit). Publish on
+# 127.0.0.1 only: plain -p 8080:8080 opens the API to your network with no key, so add
+# -e API_KEY=<secret> for that (docs/INSTALL.md, Docker):
 #   docker run --rm --gpus all \
-#     -p 8080:8080 \
+#     -p 127.0.0.1:8080:8080 \
 #     --ulimit memlock=-1 \
 #     -v strata-data:/data \
 #     -e MODEL=IQ2_XS \
@@ -52,17 +55,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/strata
+
+# requirements.txt first: a source change must not invalidate the venv layer, let alone
+# the engine build below.
+COPY requirements.txt ./
+RUN python3 -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir --upgrade pip \
+    && .venv/bin/pip install --no-cache-dir -r requirements.txt
+
 COPY . .
+RUN chmod +x setup.sh docker-entrypoint.sh
 
 # RTX 20 (75), RTX 30 (86), RTX 40 (89), RTX 50 (120), plus 80 for A-series. CMakeLists
 # refuses anything below 75. BUILD_VISION=0 skips the image encoder build.
 ARG CUDA_ARCHITECTURES=75;80;86;89;120
 ARG BUILD_VISION=1
-
-RUN python3 -m venv .venv \
-    && .venv/bin/pip install --no-cache-dir --upgrade pip \
-    && .venv/bin/pip install --no-cache-dir -r requirements.txt \
-    && chmod +x setup.sh docker-entrypoint.sh
 
 # llama.cpp at the pinned commit, then the engine and the image encoder, built
 # exactly the way setup.py builds them: native code for the CPU that builds the

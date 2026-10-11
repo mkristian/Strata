@@ -12,24 +12,37 @@
 # Narrow HIP_ARCHITECTURES to your card for a faster build; a card outside the set needs
 # a rebuild with its own arch. Building for two families at once (gfx1100 + gfx1201)
 # needs the system ROCm 7 in the base image (AMD's per-family wheels hold one family).
+# Quote a list in a shell: the ';' ends the command otherwise.
+#
+# Tuning table: the base image's hipBLASLt is 1.4.1, and tools/hip ships tables for
+# hipBLASLt 1.1.0 and 1.2.0 (gfx1100) and 1.2.2 and 1.5.0 (gfx1201) - none for 1.4.1, so
+# the first start says "no hipBLASLt tuning table" and the prompt's dense matrix products
+# use plain hipBLAS (slower prompts, same answers; docs/AMD_HIP.md, Tuning table). With
+# the card in the container, tools/hip/tune_hipblaslt.cpp makes a table for the pair.
+# gfx1101 and gfx1030 have no table for any hipBLASLt version.
 #
 # Build:
 #   docker build -f Dockerfile.rocm -t strata-rocm .
 #   docker build -f Dockerfile.rocm -t strata-rocm --build-arg HIP_ARCHITECTURES=gfx1201 .
+#   docker build -f Dockerfile.rocm -t strata-rocm --build-arg 'HIP_ARCHITECTURES=gfx1100;gfx1201' .
 #
-# Run (host needs the amdgpu kernel driver and the card's /dev nodes; no NVIDIA toolkit):
+# Run (host needs the amdgpu kernel driver and the card's /dev nodes; no NVIDIA toolkit).
+# Publish on 127.0.0.1 only: plain -p 8080:8080 opens the API to your network with no key,
+# so add -e API_KEY=<secret> for that (docs/INSTALL.md, Docker):
 #   docker run --rm \
 #     --device=/dev/kfd --device=/dev/dri \
 #     --group-add video --ipc=host \
 #     --ulimit memlock=-1 \
-#     -p 8080:8080 \
+#     -p 127.0.0.1:8080:8080 \
 #     -v strata-data:/data \
 #     -e MODEL=IQ2_XS \
 #     strata-rocm
 #
 # Setup choices are env vars, read by docker-entrypoint.sh: FAMILY, MODEL, CONTEXT,
 # VISION (no | yes | cpu - the AMD backend has no GPU image encoder, so images run on
-# the CPU), KV (int8 | q4_0 | k8v4), GPU (one card) or GPUS ("0,2" or "all", with
+# the CPU; -e VISION=cpu on an image built with BUILD_VISION=0 compiles the CPU encoder
+# on its first start, a few minutes - cmake, ninja and git are in the image),
+# KV (int8 | q4_0 | k8v4), GPU (one card) or GPUS ("0,2" or "all", with
 # LAYER_SPLIT), LOW_RAM (auto | on | off), HOST, PORT, API_KEY.
 #
 # Only the model files, the prepared pack, the MTP layer and the install config
@@ -52,7 +65,8 @@
 # newer than the host's amdgpu driver can fail to load the card. 7.14.1-full is the
 # version docs/AMD_HIP.md validates; 10.0.0-full is newer and untested here. Pin a tag,
 # or override with --build-arg ROCM_BASE=...  (rocm/dev-ubuntu-24.04 tags: 7.14.1-full,
-# 10.0.0-full, ...).
+# 10.0.0-full, ...). 7.14.1-full is 7.4 GB compressed, about 20 GB on disk, and 7.14 has
+# no smaller -complete tag, so the base image is most of the image.
 ARG ROCM_BASE=docker.io/rocm/dev-ubuntu-24.04:7.14.1-full
 FROM ${ROCM_BASE}
 
@@ -67,7 +81,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/strata
+
+# requirements.txt first: a source change must not invalidate the venv layer, let alone
+# the engine build below (10-20 minutes).
+COPY requirements.txt ./
+RUN python3 -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir --upgrade pip \
+    && .venv/bin/pip install --no-cache-dir -r requirements.txt
+
 COPY . .
+RUN chmod +x setup.sh docker-entrypoint.sh
 
 # RX 7900 XT / XTX (gfx1100) and RX 9070 / 9070 XT / AI PRO R9700 (gfx1201): the two
 # validated cards, one binary for both. Add gfx1101, gfx1200, gfx1030 for the
@@ -75,11 +98,6 @@ COPY . .
 # (the AMD backend has no GPU encoder); BUILD_VISION=0 (the default) skips it.
 ARG HIP_ARCHITECTURES=gfx1100;gfx1201
 ARG BUILD_VISION=0
-
-RUN python3 -m venv .venv \
-    && .venv/bin/pip install --no-cache-dir --upgrade pip \
-    && .venv/bin/pip install --no-cache-dir -r requirements.txt \
-    && chmod +x setup.sh docker-entrypoint.sh
 
 # llama.cpp at the pinned commit, then the HIP engine (and, for images, the CPU image
 # encoder), built exactly the way setup.py builds them. BUILD.json is what setup.py
@@ -90,7 +108,7 @@ import os
 import setup
 
 llama = setup.get_llama_cpp()
-archs = os.environ.get("HIP_ARCHITECTURES", "gfx1100").strip().strip('"').replace(",", ";").split(";")
+archs = os.environ.get("HIP_ARCHITECTURES", "gfx1100;gfx1201").strip().strip('"').replace(",", ";").split(";")
 vision = os.environ.get("BUILD_VISION", "0").strip().strip('"')
 vision = "none" if vision in ("", "0", "no") else "cpu"
 

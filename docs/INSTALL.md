@@ -5,7 +5,7 @@ AMD graphics card. The short version is in the [README](../README.md#install); a
 this for you with [AI_SETUP.md](AI_SETUP.md).
 
 > **On this page:** [What you need](#what-you-need) · [Windows](#windows) · [Linux](#linux) ·
-> [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) ·
+> [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) · [Docker AMD](#docker-amd-cards) ·
 > [Older CPUs](#older-cpus-experimental) · [Updating](#updating) · [Where things are stored](#where-things-are-stored) ·
 > [Setup's questions](#setups-questions) · [Tuning](#tuning-for-your-pc) · [All options](#options-without-questions)
 
@@ -88,7 +88,7 @@ split pays only when no single card holds the model's experts ([AMD_HIP.md](AMD_
 
 ## Docker (Linux)
 
-The same idea, in a container (NVIDIA cards).
+The same idea, in a container. NVIDIA cards first, AMD cards below.
 
 1. Host: Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
    and a driver **580 or newer** (CUDA 13.0).
@@ -98,7 +98,9 @@ The same idea, in a container (NVIDIA cards).
    The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
    set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
 3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
-   `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
+   `docker run --rm --gpus all -p 127.0.0.1:8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
+   (`-p 8080:8080` publishes on the host's all interfaces instead - use it with `-e API_KEY=<secret>`.)
+   Quote a `--build-arg` list in a shell: the `;` ends the command otherwise.
 
    The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
    (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the defaults above are the recommended ones).
@@ -135,6 +137,37 @@ The same idea, in a container (NVIDIA cards).
    Stopping: the engine releases its page-locked RAM (tens of GB) on SIGTERM, which takes longer than
    Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
    `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.
+
+### Docker (AMD cards)
+
+The same container with an AMD Radeon card, from `Dockerfile.rocm`. It builds on AMD's
+`rocm/dev-ubuntu-24.04:7.14.1-full`, the ROCm version [AMD_HIP.md](AMD_HIP.md) validates.
+
+1. Host: Docker and the kernel's **amdgpu** driver with the card's `/dev/kfd` and `/dev/dri`
+   nodes. No NVIDIA toolkit, and no ROCm on the host: the image carries its own.
+2. Build (this compiles the HIP engine into the image, so the container never compiles):
+   `docker build -f Dockerfile.rocm -t strata-rocm .`
+   `docker build -f Dockerfile.rocm -t strata-rocm --build-arg HIP_ARCHITECTURES=gfx1201 .`
+   builds for one card only (faster). The default covers gfx1100 (RX 7900 XT / XTX) and
+   gfx1201 (RX 9070 / 9070 XT / AI PRO R9700) in one binary; add gfx1101, gfx1200, gfx1030
+   for the cards in [AMD_HIP.md](AMD_HIP.md). Building for two families at once needs the
+   base image's system ROCm (AMD's wheels hold one family). The base image is 7.4 GB
+   compressed, about 20 GB on disk, and is most of the image.
+3. Run (the same first-start download, the same env vars: `MODEL`, `FAMILY`, `CONTEXT`,
+   `KV`, `GPU`/`GPUS` with `LAYER_SPLIT`, `LOW_RAM`, `HOST`, `PORT`, `API_KEY`, `REINSTALL`):
+   `docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host`
+   `--ulimit memlock=-1 -p 127.0.0.1:8080:8080 -v strata-data:/data strata-rocm`
+   Two differences from the NVIDIA image:
+   - **Images run on the CPU only** (the AMD backend has no GPU image encoder). Build with
+     `--build-arg BUILD_VISION=cpu` to put the encoder in the image; `-e VISION=cpu` on an
+     image built without it compiles the encoder on its first start (a few minutes).
+   - **The hipBLASLt tuning table does not apply to this base image.** Its hipBLASLt is
+     1.4.1, and `tools/hip` ships tables for 1.1.0 and 1.2.0 (gfx1100) and 1.2.2 and 1.5.0
+     (gfx1201), so the first start says "no hipBLASLt tuning table" and the prompt's dense
+     matrix products use plain hipBLAS (slower prompts, same answers). With the card in the
+     container, `tools/hip/tune_hipblaslt.cpp` makes a table for the pair - see
+     [AMD_HIP.md](AMD_HIP.md), Tuning table. gfx1101 and gfx1030 have no table for any
+     hipBLASLt version.
 
 ## Older CPUs (experimental)
 
