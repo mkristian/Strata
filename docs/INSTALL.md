@@ -153,6 +153,25 @@ The same container with an AMD Radeon card, from `Dockerfile.rocm`. It builds on
    for the cards in [AMD_HIP.md](AMD_HIP.md). Building for two families at once needs the
    base image's system ROCm (AMD's wheels hold one family). The base image is 7.4 GB
    compressed, about 20 GB on disk, and is most of the image.
+   A hipBLASLt tuning table is valid for one card arch AND one hipBLASLt version, so the
+   base image decides whether setup finds one. Pick the tag for your card:
+
+   | ROCM_BASE tag | hipBLASLt | card | table setup finds in `tools/hip` |
+   |---|---|---|---|
+   | `7.14.1-full` (the default) | 1.4.1 | gfx1100, gfx1150, gfx1151 | `gfx1100-hipblaslt-100401.txt`, `gfx1150-hipblaslt-100401.txt`, `gfx1151-hipblaslt-100401.txt` |
+   | `7.14.1-full` (the default) | 1.4.1 | gfx1200, gfx1201 | none |
+   | `10.0.0-full` | 1.4.1 | same as `7.14.1-full` | |
+   | `10.1.0-full` | 1.4.1 | same as `7.14.1-full` | |
+   | `7.2.4-complete` | 1.2.2 | gfx1100, gfx1200, gfx1201 | `gfx1100-hipblaslt-100202.txt`, `gfx1200-hipblaslt-100202.txt`, `gfx1201-hipblaslt-100202.txt` |
+   | `7.1.1-complete` | 1.1.0 | gfx1100 | `gfx1100-hipblaslt-100100.txt` |
+   | `7.2-complete` | 1.2.0 | gfx1100 | `gfx1100-hipblaslt-100200.txt` |
+
+   Set it with `--build-arg ROCM_BASE=docker.io/rocm/dev-ubuntu-24.04:7.2.4-complete`.
+   The default builds for gfx1100 with a table and for gfx1201 without one, so for a
+   RX 9070 / AI PRO R9700 build on `7.2.4-complete`. Only `7.14.1-full` is the ROCm
+   version [AMD_HIP.md](AMD_HIP.md) validates for the engine; `10.0.0-full` is the tag its
+   gfx1100 1.4.1 table was calibrated on, and the 7.1/7.2 tags are untested here. The
+   version is in the image at `/opt/rocm/include/hipblaslt/hipblaslt-version.h`.
 3. Run (the same first-start download, the same env vars: `MODEL`, `FAMILY`, `CONTEXT`,
    `KV`, `GPU`/`GPUS` with `LAYER_SPLIT`, `LOW_RAM`, `HOST`, `PORT`, `API_KEY`, `REINSTALL`):
    `docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host`
@@ -161,13 +180,13 @@ The same container with an AMD Radeon card, from `Dockerfile.rocm`. It builds on
    - **Images run on the CPU only** (the AMD backend has no GPU image encoder). Build with
      `--build-arg BUILD_VISION=cpu` to put the encoder in the image; `-e VISION=cpu` on an
      image built without it compiles the encoder on its first start (a few minutes).
-   - **The hipBLASLt tuning table does not apply to this base image.** Its hipBLASLt is
-     1.4.1, and `tools/hip` ships tables for 1.1.0 and 1.2.0 (gfx1100) and 1.2.2 and 1.5.0
-     (gfx1201), so the first start says "no hipBLASLt tuning table" and the prompt's dense
-     matrix products use plain hipBLAS (slower prompts, same answers). With the card in the
-     container, `tools/hip/tune_hipblaslt.cpp` makes a table for the pair - see
-     [AMD_HIP.md](AMD_HIP.md), Tuning table. gfx1101 and gfx1030 have no table for any
-     hipBLASLt version.
+   - **The tuning table depends on the base image** (step 2). A gfx1201 container on the
+     default `7.14.1-full` says "no hipBLASLt tuning table" on its first start and runs
+     the prompt's dense matrix products on plain hipBLAS (slower prompts, same answers);
+     gfx1100, gfx1150 and gfx1151 get their 1.4.1 table. With the card in the container,
+     `tools/hip/tune_hipblaslt.cpp` makes a table for the pair - see
+     [AMD_HIP.md](AMD_HIP.md), Tuning table. gfx1101, gfx1030, gfx1102, gfx1152 and gfx1103
+     have no table for any hipBLASLt version.
 
 ## Older CPUs (experimental)
 

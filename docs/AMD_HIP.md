@@ -58,8 +58,10 @@ the kernel's amdgpu driver (no ROCm install needed):
   `rocm/dev-ubuntu-24.04:7.14.1-full`, the version this page validates; the build and run
   lines are in [INSTALL.md](INSTALL.md#docker-amd-cards). The image carries its own ROCm, so
   the host needs only the kernel's amdgpu driver and the card's `/dev/kfd` and `/dev/dri`
-  nodes. Its hipBLASLt is 1.4.1, which has no tuning table in `tools/hip`, so its prompts
-  run on plain hipBLAS (see [Tuning table](#tuning-table)).
+  nodes. Its default hipBLASLt is 1.4.1, which has tables for gfx1100, gfx1150 and gfx1151
+  in `tools/hip` and none for gfx1200 and gfx1201, so a gfx1201 container runs its prompts
+  on plain hipBLAS (see [Tuning table](#tuning-table)); the base tags whose hipBLASLt has a
+  table for each card are listed in [INSTALL.md](INSTALL.md#docker-amd-cards).
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
 
