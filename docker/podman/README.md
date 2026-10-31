@@ -48,8 +48,9 @@ you must change the other.
 Strata leaves empty is written empty, with an example in the comment.
 
 `PRESET` is `podman` here, not `docker`, so a Docker setup and a Podman setup on the same machine do not share a
-preset, a tuning or a key. Show the key Strata made: `podman exec strata-strata strata launch --show-key --preset
-podman`.
+preset, a tuning or a key. Show the key Strata made: `podman exec strata-amd strata launch --show-key --preset
+podman`. Podman names the running container `<pod name>-<container name>`: the pod is `strata` (metadata.name) and
+the container is `amd`, so the name is `strata-amd`. On Podman 5.7 or newer, `--no-pod-prefix` makes it `amd`.
 
 ```sh
 podman kube play --replace --configmap ~/strata-config.yaml ~/strata-amd.yaml

@@ -23,7 +23,10 @@ data:
   TUNE: "skip"       # quick | thorough | skip (done once, kept in the preset; RETUNE=1 tunes again)
   API_KEY: ""        # the key clients must send, 16 characters or more (`openssl rand -hex 24` makes a good one).
                      # Empty: Strata makes one on the first start and keeps it in the volume.
-                     # Show it:  podman exec strata-strata strata launch --show-key --preset podman
+                     # Show it:  podman exec strata-amd strata launch --show-key --preset podman
+                     #            (Podman names the container `<pod name>-<container name>`, so the AMD pod's is
+                     #            `strata-amd`; `podman pod ps` lists it. The other two pod files leave the
+                     #            container as `strata`, so theirs is `strata-strata`.)
   PRESET: "podman"   # the preset name in /data. It is `podman`, not `docker`, so a Docker setup and a Podman setup
                      # on the same machine do not share a preset, a tuning or a key.
   STRATA_SET: ""     # advanced engine settings, space separated KEY=VALUE, e.g. prefill=65536

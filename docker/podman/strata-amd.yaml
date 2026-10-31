@@ -1,5 +1,5 @@
-# Strata on an AMD card (RX 9000 series, Radeon AI PRO R9700; RX 7000: 0.2.3-rocm-gfx110x, Ryzen AI Max:
-# 0.2.3-rocm-gfx1151), as one Pod, for `podman kube play`.
+# Strata on an AMD card (RX 9000 series, Radeon AI PRO R9700; RX 7000: latest-rocm-gfx110x, Ryzen AI Max:
+# latest-rocm-gfx1151), as one Pod, for `podman kube play`.
 # Needs on the host: the amdgpu kernel driver (Linux 6.8 or newer). ROCm is inside the image, nothing to install.
 #
 # The settings are in strata-config.yaml, the same file for every card. Start it:
@@ -71,8 +71,13 @@ spec:
     #     path: /srv/gguf/IQ3_XXS
     #     type: Directory
   containers:
-    - name: strata
-      image: ghcr.io/niko1221/strata:0.2.3-rocm-gfx120x
+    # Podman names the running container `<pod name>-<container name>`, so this is `strata-amd` (the pod is
+    # `strata`, from metadata.name above). With `--no-pod-prefix` (Podman 5.7 or newer) it is `amd`.
+    - name: amd
+      # latest-rocm-gfx120x is the newest published RDNA4 image. To keep the exact engine, name the release
+      # instead, for example ghcr.io/niko1221/strata:0.2.9-rocm-gfx120x. A cached `latest` is not re-pulled by
+      # IfNotPresent, so after a new release pull it: podman pull ghcr.io/niko1221/strata:latest-rocm-gfx120x.
+      image: ghcr.io/niko1221/strata:latest-rocm-gfx120x
       imagePullPolicy: IfNotPresent
       ports:
         # Podman publishes only ports with hostPort, so this is the address on this machine. To publish on
