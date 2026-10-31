@@ -105,6 +105,21 @@ They set what the commands above set: the GPU (`deploy.resources.reservations.de
 `stop_grace_period`, the `strata-data` volume, and the port bound to `127.0.0.1`. To let other computers reach it, set
 `STRATA_BIND=0.0.0.0` in `.env` and keep a real `API_KEY`.
 
+**Kubernetes YAML with Podman.** [docker/podman/](../docker/podman) is the same setup as a Kubernetes Pod: one
+ConfigMap with the settings for every card, one Pod per card, a Quadlet unit for boot. `podman kube play` takes no
+`--env-file`, so the settings are in `strata-config.yaml` and the pod reads it by name. The preset is named `podman`,
+not `docker`, so a Docker and a Podman setup on one machine do not share a preset, a tuning or a key.
+
+```sh
+podman kube play --configmap docker/podman/strata-config.yaml docker/podman/strata-amd.yaml
+podman pod logs strata                                         # the first start downloads the model
+```
+
+`--publish=[[ip:][hostPort]:]containerPort` publishes on another port or address; the command line wins over the pod
+file. Edit `strata-config.yaml` and add `--replace` to apply a change; the model and your preset stay in the volume.
+Its README maps every compose line and lists what Podman does not support. It has not been run on a machine with a
+graphics card.
+
 ## Settings
 
 Everything is an environment variable (`-e NAME=value`, or in compose). They are the same questions `strata launch` asks on its

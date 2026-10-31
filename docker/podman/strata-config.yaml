@@ -1,0 +1,29 @@
+# Strata's settings, as a ConfigMap. This one file is for every card: AMD, NVIDIA and Intel.
+# `podman kube play` has no `--env-file` and Kubernetes YAML has no variables, so the settings live here and the pod
+# file reads them by name (`envFrom: configMapRef: strata-config`). Edit this file, then
+# `podman kube play --replace --configmap <this file> <pod file>` applies the change; the model and your preset stay
+# in the volume.
+#
+# The names are the same as docker/compose/.env.example and docs/DOCKER.md. A setting with a default is written with
+# that default. A setting Strata leaves empty is written empty, with an example in the comment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: strata-config
+data:
+  MODEL: ""          # model size, e.g. IQ3_XXS, Q2_0 (empty: Strata picks one for this card)
+  FAMILY: ""         # the family when a size exists in several (qwen, swift, coder)
+  MODEL_PATH: ""     # GGUF files you already have, as seen inside the container (mounted in the pod file, read-only)
+  CONTEXT: "32k"     # 32k | 64k | 128k | 256k
+  PARALLEL: ""       # requests answered at the same time, 1 to 8 (empty: fit to the card)
+  VISION: "off"      # off | on | gpu | cpu (the picture reader, about 0.9 GB, comes with the model)
+  KV: ""             # int8 | q4_0 | k8v4 | fp16
+  GPUS: ""           # card numbers, e.g. 0,1 (empty or all: the engine's choice)
+  GPU_ROLES: ""      # a role for each card (main, helper, off)
+  TUNE: "skip"       # quick | thorough | skip (done once, kept in the preset; RETUNE=1 tunes again)
+  API_KEY: ""        # the key clients must send, 16 characters or more (`openssl rand -hex 24` makes a good one).
+                     # Empty: Strata makes one on the first start and keeps it in the volume.
+                     # Show it:  podman exec strata-strata strata launch --show-key --preset podman
+  PRESET: "podman"   # the preset name in /data. It is `podman`, not `docker`, so a Docker setup and a Podman setup
+                     # on the same machine do not share a preset, a tuning or a key.
+  STRATA_SET: ""     # advanced engine settings, space separated KEY=VALUE, e.g. prefill=65536

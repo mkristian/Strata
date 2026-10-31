@@ -1,0 +1,31 @@
+# Strata as a systemd unit, for `podman kube play`. Rootless: put it in ~/.config/systemd/user/ and run
+# `systemctl --user daemon-reload && systemctl --user start strata`. Rootful: /etc/systemd/system/ and
+# `systemctl start strata`.
+#
+# Quadlet runs `podman kube play --replace --service-container=true` on start and `podman kube down` on stop.
+# The pod's own 120-second drain is honoured, but systemd needs its own timer, else it cuts the unit at 90 s.
+# `podman kube down` deletes the volume, and the model with it, only when KubeDownForce is set: keep it off.
+
+[Unit]
+Description=Strata (podman kube play)
+After=network.target
+
+[Service]
+Type=notify
+TimeoutStopSec=120s
+# Restart on failure. The first start downloads the model, so give it a long window.
+# Restart=on-failure
+# RestartSec=30
+
+[Kube]
+# The pod file for your card, and the settings file (the same for every card). Full paths.
+Yaml=/home/you/strata-intel.yaml
+ConfigMap=/home/you/strata-config.yaml
+# Publish on another port or address: the same value as `podman kube play --publish`.
+#PublishPort=127.0.0.1:9090:8080
+# Rootless, with the host user's id inside the container (the AMD and Intel files need the render group:
+# getent group render | cut -d: -f3, then supplementalGroups in the pod file).
+#UserNS=keep-id
+# Delete the volume on stop, the model with it. Off by default.
+#KubeDownForce=true
+# Extra arguments for `podman kube play`, e.g. --podman-args=--network=host

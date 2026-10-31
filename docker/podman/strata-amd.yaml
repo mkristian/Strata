@@ -1,0 +1,134 @@
+# Strata on an AMD card (RX 9000 series, Radeon AI PRO R9700; RX 7000: 0.2.3-rocm-gfx110x, Ryzen AI Max:
+# 0.2.3-rocm-gfx1151), as one Pod, for `podman kube play`.
+# Needs on the host: the amdgpu kernel driver (Linux 6.8 or newer). ROCm is inside the image, nothing to install.
+#
+# The settings are in strata-config.yaml, the same file for every card. Start it:
+#
+#   podman kube play --configmap docker/podman/strata-config.yaml docker/podman/strata-amd.yaml
+#   podman pod logs strata          # the first start downloads the model (a stopped download continues)
+#   podman kube down docker/podman/strata-amd.yaml        # keeps the volume and the model; --force deletes them
+#
+# The same setup as docker/compose/docker-compose.amd.yml. docker/podman/README.md says what each compose line
+# became and what Podman does not support. Not tested on hardware.
+
+# The model, the prepared pack, the preset, the tuning and the key. In Podman this claim is the name of a
+# Podman volume, so the model survives `podman kube down`.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: strata-data
+  # For a container that runs as a non-root `user:`: who owns the volume, as `id -u` and `id -g` give.
+  # annotations:
+  #   volume.podman.io/uid: "1000"
+  #   volume.podman.io/gid: "1000"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 120Gi
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: strata
+  labels:
+    app: strata
+  annotations:
+    # compose's `ulimits: memlock: -1`. There is no kube field for ulimits; this annotation is the way.
+    # Rootful: -1 (unlimited) goes through. Rootless: Podman clamps -1 to your own hard limit (`ulimit -l -H`).
+    io.podman.annotations.ulimit: memlock=-1:-1
+spec:
+  # compose's `stop_grace_period: 2m`: SIGTERM, then 120 seconds to drain, then SIGKILL. `podman kube down`
+  # honours it. A Quadlet unit needs TimeoutStopSec=120s in [Unit], else systemd cuts it at 90 s.
+  terminationGracePeriodSeconds: 120
+  restartPolicy: Always
+  # compose's `group_add: video, render`, only for a container that runs as a non-root `user:`. Podman takes
+  # numbers, not names (getent group video render):
+  # securityContext:
+  #   supplementalGroups: [27, 989]   # video, render
+  volumes:
+    - name: strata-data
+      persistentVolumeClaim:
+        claimName: strata-data
+    - name: shm                      # compose's `shm_size: 2gb`: Podman makes a tmpfs of that size
+      emptyDir:
+        medium: Memory
+        sizeLimit: 2Gi
+    - name: kfd                      # compose's `devices: /dev/kfd`
+      hostPath:
+        path: /dev/kfd
+        type: CharDevice
+    - name: dri                      # compose's `devices: /dev/dri`
+      hostPath:
+        path: /dev/dri
+        type: Directory
+    # GGUF files you already have: MODEL_PATH is the place inside the container, the path below is the folder on
+    # this machine. Put MODEL_PATH in strata-config.yaml and write these lines:
+    # - name: models
+    #   hostPath:
+    #     path: /srv/gguf/IQ3_XXS
+    #     type: Directory
+  containers:
+    - name: strata
+      image: ghcr.io/niko1221/strata:0.2.3-rocm-gfx120x
+      imagePullPolicy: IfNotPresent
+      ports:
+        # Podman publishes only ports with hostPort, so this is the address on this machine. To publish on
+        # another port or address, add --publish to the start command: --publish=127.0.0.1:9090:8080. The
+        # containerPort is the match, and the command line wins over this file. For other computers:
+        # --publish=0.0.0.0:8080:8080, and keep a real key.
+        - name: http
+          containerPort: 8080
+          hostIP: 127.0.0.1
+          hostPort: 8080
+      envFrom:
+        # The settings: strata-config.yaml, passed with --configmap, is found by this name.
+        - configMapRef:
+            name: strata-config
+            optional: true
+      securityContext:
+        # The widest opening a container can have: it opens the device cgroup, which is what gives the container
+        # the device files. Put the pod on a machine you control. The smaller opening (no privileged, the two
+        # `podman.io/device` lines, spc_t) is the shape ramalama ships for a ROCm card; not tested on Strata's
+        # hardware.
+        privileged: true
+        # spc_t is the label `--security-opt=label=disable` gives: on SELinux the container reads the device
+        # files it is given without `setsebool -P container_use_devices` and without relabeling them.
+        seLinuxOptions:
+          type: spc_t
+      resources:
+        requests:
+          cpu: "4"
+        # No memory limit: Strata plans from the machine's RAM and loads tens of GB, so a low limit ends in the
+        # container being killed. No CPU limit: Podman applies limits.cpu as a cgroup quota, which throttles the
+        # engine in the middle of generation. requests.cpu is not applied by Podman.
+        # compose's `--device /dev/kfd --device /dev/dri`, in the shape Podman reads in a kube file: it adds
+        # /dev/kfd, and walks /dev/dri and adds every device node inside it.
+        limits:
+          'podman.io/device=/dev/kfd': 1
+          'podman.io/device=/dev/dri': 1
+      volumeMounts:
+        - name: strata-data
+          mountPath: /data
+        - name: shm
+          mountPath: /dev/shm
+        - name: kfd
+          mountPath: /dev/kfd
+        - name: dri
+          mountPath: /dev/dri
+        # - name: models
+        #   mountPath: /models     # the same value as MODEL_PATH in strata-config.yaml
+        #   readOnly: true
+      # The image's own HEALTHCHECK, written out: the same command and the same timings. Podman runs it as a
+      # health check and restarts the container when it fails. Podman has no readinessProbe, so this is the
+      # probe that says "the server is up". The first start downloads the model, so the first check is at 2 h.
+      livenessProbe:
+        exec:
+          command:
+            - /opt/strata/healthcheck.sh
+        initialDelaySeconds: 7200
+        periodSeconds: 30
+        timeoutSeconds: 8
+        failureThreshold: 3

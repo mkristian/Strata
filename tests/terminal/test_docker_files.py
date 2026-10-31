@@ -1,11 +1,14 @@
 """The Docker files stay consistent: shell scripts parse, Dockerfiles use only what the legacy builder knows, the compose examples carry what
-docs/DOCKER.md says they carry, and every setting the document lists is one the entry point reads."""
+docs/DOCKER.md says they carry, the Podman Kubernetes files are what the generator writes and carry the same settings,
+and every setting the document lists is one the entry point reads."""
 from __future__ import annotations
 
 import ast
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -279,6 +282,143 @@ class Publishing(unittest.TestCase):
         self.assertIn("ghcr.io/niko1221/strata", text)
         self.assertIn("docker/publish.sh", text)
         self.assertNotIn("${{ secrets.GITHUB_TOKEN }}\" |", text)   # the token goes through an env variable, not into the command line
+
+
+class Podman(unittest.TestCase):
+    """docker/podman/: one ConfigMap for every card, one pod file per card, the Quadlet unit. Nothing here runs a
+    container (Podman cannot make one in the test environment), so the check is that the YAML parses and carries what
+    compose carries."""
+    POD = DOCKER / "podman"
+    CARDS = ("nvidia", "amd", "intel")
+    TAGS = {"nvidia": "ghcr.io/niko1221/strata:0.2.3-cuda13", "amd": "ghcr.io/niko1221/strata:0.2.3-rocm-gfx120x",
+            "intel": "ghcr.io/niko1221/strata:0.2.3-sycl"}
+    # The settings docs/DOCKER.md lists. GPU is not a setting name (GPUS is), and PORT is not a ConfigMap line here:
+    # the published port comes from the pod file and from --publish, and containerPort is the match.
+    DOC_SETTINGS = {"MODEL", "FAMILY", "MODEL_PATH", "CONTEXT", "PARALLEL", "VISION", "KV", "GPUS", "GPU_ROLES",
+                    "TUNE", "API_KEY", "PRESET", "STRATA_SET"}
+
+    def docs(self, name: str) -> list:
+        """Every document in a file, with the empty ones dropped: a document with no kind is an error for `kube play`."""
+        return [d for d in yaml.safe_load_all((self.POD / name).read_text(encoding="utf-8")) if d]
+
+    def pod(self, card: str) -> dict:
+        d = self.docs(f"strata-{card}.yaml")
+        self.assertEqual([x["kind"] for x in d], ["PersistentVolumeClaim", "Pod"],
+                         f"{card}: the pod file holds the claim and the pod, and nothing else")
+        return d[-1]
+
+    def config(self) -> dict:
+        d = self.docs("strata-config.yaml")
+        self.assertEqual([x["kind"] for x in d], ["ConfigMap"], "the settings file holds only the ConfigMap")
+        return d[0]
+
+    def test_one_settings_file_for_every_card(self):
+        """The settings are one file, and no pod file carries any of them: the pod finds them by name."""
+        cfg = self.config()
+        self.assertEqual(cfg["metadata"]["name"], "strata-config")
+        for card in self.CARDS:
+            pod = self.pod(card)
+            refs = [c["envFrom"][0]["configMapRef"] for c in pod["spec"]["containers"]]
+            self.assertEqual([r["name"] for r in refs], ["strata-config"], f"{card}: reads the settings by name")
+            self.assertTrue(all(r.get("optional") for r in refs),
+                            f"{card}: optional: true, so a missing ConfigMap is not a start error")
+            self.assertNotIn("ConfigMap", [x["kind"] for x in self.docs(f"strata-{card}.yaml")],
+                             f"{card}: the settings are not copied into the pod file")
+
+    def test_every_documented_setting_is_in_the_settings_file(self):
+        data = self.config()["data"]
+        for name in sorted(self.DOC_SETTINGS):
+            self.assertIn(name, data, f"docs/DOCKER.md lists {name} but strata-config.yaml does not carry it")
+        self.assertEqual(data["CONTEXT"], "32k")
+        self.assertEqual(data["VISION"], "off")
+        self.assertEqual(data["TUNE"], "skip")
+        self.assertEqual(data["PRESET"], "podman", "the preset is named podman, so a Docker and a Podman setup do not share one")
+        self.assertEqual(data["API_KEY"], "", "no key: Strata makes one on the first start")
+
+    def test_the_settings_file_is_the_same_one_the_compose_examples_use(self):
+        """The names are the same, so one file configures both. Every name in .env.example is a setting."""
+        env = (DOCKER / "compose" / ".env.example").read_text(encoding="utf-8")
+        names = set(re.findall(r"^#?\s*(?:export\s+)?([A-Z][A-Z_]+)=", env, re.M))
+        data = self.config()["data"]
+        for name in sorted(names - {"RENDER_GID", "STORAGE", "MODEL_HOST", "STRATA_BIND", "STRATA_PORT", "STRATA_IMAGE",
+                                    "PORT"}):
+            self.assertIn(name, data, f".env.example has {name} but strata-config.yaml does not")
+        # The pod file carries the address, which a ConfigMap cannot set: Podman needs hostIP and hostPort.
+        for card in self.CARDS:
+            ports = self.pod(card)["spec"]["containers"][0]["ports"][0]
+            self.assertEqual(ports["hostIP"], "127.0.0.1", f"{card}: the server is local by default")
+            self.assertEqual(ports["hostPort"], 8080)
+            self.assertEqual(ports["containerPort"], 8080, f"{card}: the container's port is the image's default")
+            self.assertNotIn("PORT", self.config()["data"],
+                             "the published port is not a setting: it is the pod file and --publish")
+
+    def test_every_card_file_carries_the_compose_settings(self):
+        for card in self.CARDS:
+            pod = self.pod(card)
+            ctr = pod["spec"]["containers"][0]
+            self.assertEqual(pod["metadata"]["annotations"]["io.podman.annotations.ulimit"], "memlock=-1:-1",
+                             f"{card}: compose's ulimits")
+            self.assertEqual(pod["spec"]["terminationGracePeriodSeconds"], 120, f"{card}: compose's stop_grace_period")
+            self.assertEqual(pod["spec"]["restartPolicy"], "Always")
+            shm = [v for v in pod["spec"]["volumes"] if v["name"] == "shm"][0]
+            self.assertEqual(shm["emptyDir"]["medium"], "Memory", f"{card}: shm_size is a tmpfs")
+            self.assertEqual(shm["emptyDir"]["sizeLimit"], "2Gi")
+            claim = [v for v in pod["spec"]["volumes"] if v["name"] == "strata-data"][0]
+            self.assertEqual(claim["persistentVolumeClaim"]["claimName"], "strata-data",
+                             f"{card}: the model is in a volume that `kube down` keeps")
+            self.assertEqual(ctr["image"], self.TAGS[card], f"{card}: the image is the one docs/DOCKER.md names")
+            probe = ctr["livenessProbe"]
+            self.assertEqual(probe["exec"]["command"], ["/opt/strata/healthcheck.sh"])
+            self.assertEqual((probe["initialDelaySeconds"], probe["periodSeconds"], probe["timeoutSeconds"],
+                              probe["failureThreshold"]), (7200, 30, 8, 3), f"{card}: the image's HEALTHCHECK")
+            self.assertNotIn("cpu", ctr["resources"].get("limits", {}), f"{card}: no CPU limit (it throttles generation)")
+            self.assertNotIn("memory", ctr["resources"].get("limits", {}), f"{card}: no memory limit (Strata plans from the machine's RAM)")
+
+    def test_card_access_differs_the_way_compose_does(self):
+        amd, nvidia, intel = self.pod("amd"), self.pod("nvidia"), self.pod("intel")
+        names = lambda p: {v["name"] for v in p["spec"]["volumes"]}
+        self.assertEqual(names(amd) - {"strata-data", "shm"}, {"kfd", "dri"}, "AMD mounts /dev/kfd and /dev/dri")
+        self.assertEqual(names(intel) - {"strata-data", "shm"}, {"dri"}, "Intel mounts /dev/dri only")
+        self.assertEqual(names(nvidia) - {"strata-data", "shm"}, set(), "NVIDIA mounts no device: CDI adds the card")
+        limits = lambda p: set(p["spec"]["containers"][0]["resources"]["limits"])
+        self.assertEqual(limits(amd), {"podman.io/device=/dev/kfd", "podman.io/device=/dev/dri"})
+        self.assertEqual(limits(intel), {"podman.io/device=/dev/dri"})
+        self.assertEqual(limits(nvidia), {"nvidia.com/gpu=all"}, "compose's --gpus all, in the CDI form")
+        sec = lambda p: p["spec"]["containers"][0].get("securityContext", {})
+        self.assertTrue(sec(amd).get("privileged"), "the device cgroup is what opens /dev/kfd")
+        self.assertEqual(sec(amd)["seLinuxOptions"]["type"], "spc_t", "the label --security-opt=label=disable gives")
+        self.assertEqual(sec(intel)["seLinuxOptions"]["type"], "spc_t")
+        self.assertFalse(sec(intel).get("allowPrivilegeEscalation", True), "Intel: no privilege escalation")
+        self.assertEqual(sec(intel)["capabilities"]["drop"], ["ALL"])
+        self.assertFalse(sec(nvidia), "NVIDIA: no securityContext, CDI adds only the card's devices")
+        mounts = lambda p: {m["mountPath"] for m in p["spec"]["containers"][0]["volumeMounts"]}
+        self.assertIn("/dev/kfd", mounts(amd))
+        self.assertNotIn("/dev/kfd", mounts(intel))
+        self.assertIn("/data", mounts(nvidia))
+
+    def test_the_start_command_in_each_file_names_both_files(self):
+        for card in self.CARDS:
+            head = (self.POD / f"strata-{card}.yaml").read_text(encoding="utf-8").split("apiVersion")[0]
+            self.assertIn(f"--configmap docker/podman/strata-config.yaml docker/podman/strata-{card}.yaml", head,
+                          f"{card}: the header shows the command that starts it")
+            self.assertIn(f"podman kube down docker/podman/strata-{card}.yaml", head)
+
+    def test_the_quadlet_unit_keeps_the_two_minute_drain_and_the_volume(self):
+        text = (self.POD / "strata.kube").read_text(encoding="utf-8")
+        self.assertIn("TimeoutStopSec=120s", text)
+        self.assertIn("Yaml=", text)
+        self.assertIn("ConfigMap=", text, "the unit passes the settings file with ConfigMap=")
+        self.assertEqual([l for l in text.splitlines() if l.strip().startswith("KubeDownForce")
+                          and not l.strip().startswith("#")], [], "deleting the volume on stop deletes the model")
+
+    def test_the_readme_names_the_files_and_the_mapping(self):
+        readme = (self.POD / "README.md").read_text(encoding="utf-8")
+        for f in ("strata-config.yaml", "strata.kube") + tuple(f"strata-{c}.yaml" for c in self.CARDS):
+            self.assertIn(f, readme, f"README.md must name {f}")
+        for line in ("--configmap", "io.podman.annotations.ulimit", "shm_size", "stop_grace_period", "readinessProbe",
+                     "nvidia.com/gpu=all", "ConfigMap=", "--publish", "PublishPort="):
+            self.assertIn(line, readme, f"the README must say {line}")
+        self.assertIn("Not tested on hardware", readme)
 
 
 if __name__ == "__main__":
